@@ -1,0 +1,196 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  PREMIUM_USER
+}
+
+enum Templates {
+  REACT
+  ANGULAR
+  VUE
+  NEXTJS
+  SVELTE
+  ASTRO
+  EXPRESS
+  HONO
+}
+
+model User {
+  id            String          @id @default(cuid()) @map("_id") 
+  name          String?
+  email         String         @unique
+  image         String?
+
+  accounts Account[]
+  myplayground Playground[]
+  starredPlayground StarMark[]
+
+
+  role        UserRole            @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid()) @map("_id")
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String
+  refreshToken      String? @map("refresh_token")
+  accessToken       String? @map("access_token")
+  expiresAt         Int?    @map("expires_at")
+  tokenType         String? @map("token_type")
+  scope             String?
+  idToken           String? @map("id_token")
+  sessionState      String? @map("session_state")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Playground {
+  id String @id @default(cuid()) @map("_id")
+  title String
+  description String?
+  template Templates  @default(REACT)
+  Starmark StarMark[]
+  templateFiles TemplateFile[]
+  ragIndex RagIndex?
+  ragChunks RagChunk[]
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+}
+
+model TemplateFile {
+  id String @id @default(cuid()) @map("_id")
+  content Json
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  playgroundId String @unique
+  playground Playground @relation(fields: [playgroundId], references: [id], onDelete: Cascade)
+}
+
+model StarMark {
+  id String @id @default(cuid()) @map("_id")
+  userId String
+  playgroundId String
+  isMarked Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playground Playground @relation(fields: [playgroundId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, playgroundId])
+}
+
+// ---- RAG index (server-side only) ----
+//
+// Consistency strategy: chunks are written under a fresh `runId`, and only become
+// visible when RagIndex.files (a manifest of path -> hash + runId) is updated in ONE
+// single-document write. MongoDB guarantees single-document writes are atomic, so no
+// multi-document transaction is needed. Readers must only use chunks that match a
+// manifest entry's (path, runId); anything else is staging or stale data.
+// Ollama vector search uses an Atlas index named rag_chunk_vector on RagChunk.
+// Voyage vector search uses a separate Atlas index named rag_chunk_vector_voyage on
+// RagChunkVoyage. Prisma does not create either index. Do not point both names at one collection.
+
+type RagManifestFile {
+  path        String
+  contentHash String
+  runId       String
+}
+
+model RagIndex {
+  id                  String            @id @default(cuid()) @map("_id")
+  playgroundId        String            @unique
+  userId              String
+  embeddingModel      String
+  embeddingDimensions Int
+  // Optimistic-concurrency counter: a commit only succeeds if this is unchanged.
+  version             Int               @default(1)
+  files               RagManifestFile[]
+  // The manifest replaced by a cross-collection model switch. Empty until that happens.
+  // A later same-model commit leaves these fields in place so rollback can restore them.
+  previousEmbeddingModel      String?
+  previousEmbeddingDimensions Int?
+  previousFiles               RagManifestFile[]
+  updatedAt           DateTime          @updatedAt
+
+  playground Playground @relation(fields: [playgroundId], references: [id], onDelete: Cascade)
+}
+
+model RagChunk {
+  id           String   @id @default(cuid()) @map("_id")
+  playgroundId String
+  userId       String
+  runId        String
+  // RagIndex.version this run read before staging. A run whose baseVersion is below the
+  // committed version can never commit (its version guard fails), so its chunks are dead.
+  baseVersion  Int
+  path         String
+  chunkIndex   Int
+  startLine    Int
+  endLine      Int
+  content      String
+  fileHash     String
+  embedding    Float[]
+  model        String
+  dimensions   Int
+  createdAt    DateTime @default(now())
+
+  playground Playground @relation(fields: [playgroundId], references: [id], onDelete: Cascade)
+
+  // A retried run can never create duplicate chunks for the same file position.
+  @@unique([playgroundId, runId, path, chunkIndex])
+  @@index([playgroundId, path])
+}
+
+// Voyage vectors only. Ollama rows stay in RagChunk. No relation, so this collection
+// is never written by an Ollama index run.
+model RagChunkVoyage {
+  id           String   @id @default(cuid()) @map("_id")
+  playgroundId String
+  userId       String
+  runId        String
+  baseVersion  Int
+  path         String
+  chunkIndex   Int
+  startLine    Int
+  endLine      Int
+  content      String
+  fileHash     String
+  embedding    Float[]
+  model        String
+  dimensions   Int
+  createdAt    DateTime @default(now())
+
+  @@unique([playgroundId, runId, path, chunkIndex])
+  @@index([playgroundId, path])
+  @@map("RagChunkVoyage")
+}

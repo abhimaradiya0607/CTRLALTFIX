@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   // Keep Next.js output tracing scoped to this snapshot project.
   outputFileTracingRoot: process.cwd(),
 
+  outputFileTracingIncludes: {
+    "/*": ["./lib/generated/prisma/**/*"],
+  },
+
   images: {
     remotePatterns: [
       {

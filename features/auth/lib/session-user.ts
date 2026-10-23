@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import type { UserRole } from "@/lib/generated/prisma/enums";
+import type { UserRole } from "@prisma/client";
 import { sessionUserSelect } from "./session-user-select";
 
 export type SessionUserRecord = {

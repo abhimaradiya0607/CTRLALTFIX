@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "../../../lib/generated/prisma/client.ts";
+import  { Prisma, PrismaClient } from "@prisma/client";
 import { OLLAMA_VECTOR_INDEX_NAME, VOYAGE_VECTOR_INDEX_NAME } from "./embedding-target.ts";
 import type { IndexStore, ManifestFile } from "./index-project.ts";
 import type { VectorSearchQuery } from "./retrieve.ts";

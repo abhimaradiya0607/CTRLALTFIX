@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "prisma generate && next build && mkdir -p .next/server/chunks && cp lib/generated/prisma/libquery_engine-rhel-openssl-3.0.x.so.node .next/server/chunks/",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
     "postinstall": "node scripts/patch-monaco-dompurify.mjs"

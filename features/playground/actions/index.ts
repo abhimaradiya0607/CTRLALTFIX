@@ -1,7 +1,7 @@
 "use server"
 
 import { db } from "@/lib/db";
-import { Prisma } from "@/lib/generated/prisma/client";
+import { Prisma } from "@prisma/client";
 import { TemplateFolder } from "../lib/path-to-json";
 import { readOwnedPlayground } from "../lib/project-access";
 

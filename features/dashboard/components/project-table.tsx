@@ -56,7 +56,7 @@ import {
   Eye,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Playground } from "@/lib/generated/prisma/client";
+import type { Playground } from "@prisma/client";
 // import { MarkedToggleButton } from "./toggle-star";
 import {Project} from '../types';
 import { readActionError } from "../lib/action-result";

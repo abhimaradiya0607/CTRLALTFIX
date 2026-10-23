@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { PrismaClient } from "../../../lib/generated/prisma/client.ts";
+import { PrismaClient } from "@prisma/client";
 import type { TemplateFolder } from "../../playground/types/index.ts";
 import type { EmbeddingProvider } from "../lib/embed-chunks.ts";
 import { indexProject, type IndexProjectDeps, type ManifestFile } from "../lib/index-project.ts";

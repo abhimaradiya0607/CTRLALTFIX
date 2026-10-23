@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
-import type { Templates } from "@/lib/generated/prisma/enums";
+import type { Templates } from "@prisma/client";
 import { decideProjectAccess } from "./project-access-decision";
 
 export type OwnedPlayground = {

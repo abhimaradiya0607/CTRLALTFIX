@@ -8,8 +8,10 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@prisma/client", "prisma"],
 
   outputFileTracingIncludes: {
-    "/*": ["./lib/generated/prisma/**/*"],
-    "/api/*": ["./lib/generated/prisma/**/*"],
+    "/*": [
+      "./node_modules/.prisma/client/**/*",
+      "./node_modules/@prisma/client/**/*",
+    ],
   },
 
   images: {

@@ -2,8 +2,7 @@
 
 import {currentUser} from "@/features/auth/actions"
 import {db} from "@/lib/db"
-import { Prisma } from "@/lib/generated/prisma/client"
-import { Templates } from "@/lib/generated/prisma/enums"
+import { Prisma, Templates } from "@prisma/client";
 import { revalidatePath } from "next/cache"
 import { getSessionUserId, readOwnedPlayground } from "@/features/playground/lib/project-access"
 import { planProjectDuplicate } from "../lib/duplicate-plan"

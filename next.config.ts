@@ -1,11 +1,15 @@
+
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Keep Next.js output tracing scoped to this snapshot project.
   outputFileTracingRoot: process.cwd(),
 
+  serverExternalPackages: ["@prisma/client", "prisma"],
+
   outputFileTracingIncludes: {
     "/*": ["./lib/generated/prisma/**/*"],
+    "/api/*": ["./lib/generated/prisma/**/*"],
   },
 
   images: {

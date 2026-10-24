@@ -49,4 +49,24 @@ describe("templateStructureKey", () => {
     assert.notEqual(templateStructureKey(tree), templateStructureKey(added));
     assert.notEqual(templateStructureKey(tree), templateStructureKey(renamed));
   });
+
+  it("ignores a package-manager lockfile so installing a dependency does not remount", () => {
+    const withLock: TemplateFolder = {
+      ...tree,
+      items: [
+        ...tree.items,
+        { filename: "package-lock", fileExtension: "json", content: "{}\n" },
+      ],
+    };
+    const lockEdited: TemplateFolder = {
+      ...withLock,
+      items: [
+        ...tree.items,
+        { filename: "package-lock", fileExtension: "json", content: "{\"changed\":true}\n" },
+      ],
+    };
+
+    assert.equal(templateStructureKey(tree), templateStructureKey(withLock));
+    assert.equal(templateStructureKey(withLock), templateStructureKey(lockEdited));
+  });
 });

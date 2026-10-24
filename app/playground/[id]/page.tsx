@@ -41,11 +41,19 @@ import { useWebContainer } from "@/features/webContainers/hooks/usewebContainer"
 import WebContainerPreview from "@/features/webContainers/components/web-container-preview";
 import LoadingStep from "@/components/ui/loader";
 import {
+  applyExternalFileContents,
+  createExclusiveQueue,
+  isMissingContainerFile,
+  manifestPathsIn,
+} from "@/features/playground/lib/container-sync";
+import {
   ProjectNoLongerCurrent,
+  editorStateAfterSave,
   explorerSaveDecision,
   saveFailureMessage,
   saveFilesToProject,
 } from "@/features/playground/lib/save-result";
+import { toContainerPath } from "@/features/webContainers/hooks/container-files";
 import {
   nextPreviewVisible,
   previewMenuLabel,
@@ -90,7 +98,6 @@ export default function PlaygroundPage() {
     setTemplateData,
     setActiveFileId,
     setPlaygroundId,
-    setOpenFiles,
   } = useFileExplorer();
 
   useEffect(() => {
@@ -115,6 +122,69 @@ export default function PlaygroundPage() {
   } = useWebContainer({ templateData: templateData! });
 
   const lastSyncedContent = useRef<Map<string, string>>(new Map());
+  const fileQueue = useRef(createExclusiveQueue());
+  const templateDataRef = useRef(templateData);
+  templateDataRef.current = templateData;
+
+  const readContainerFile = useCallback(
+    async (path: string): Promise<string | null> => {
+      if (!instance) throw new Error("Web container not initialized");
+      try {
+        return await instance.fs.readFile(toContainerPath(path), "utf-8");
+      } catch (error) {
+        if (isMissingContainerFile(error)) return null;
+        throw error;
+      }
+    },
+    [instance],
+  );
+
+  const syncPackageManagerFiles = useCallback(async () => {
+    if (!instance) return;
+    const container = instance;
+    await fileQueue.current(async () => {
+      if (!isCurrentProject() || useFileExplorer.getState().playgroundId !== id) return;
+      const explorer = useFileExplorer.getState();
+      const tree =
+        explorer.templateData && "items" in explorer.templateData
+          ? explorer.templateData
+          : templateDataRef.current;
+      if (!tree || !("items" in tree)) return;
+
+      const files = new Map<string, string>();
+      for (const path of manifestPathsIn(tree)) {
+        try {
+          const content = await container.fs.readFile(toContainerPath(path), "utf-8");
+          if (typeof content === "string") files.set(path, content);
+        } catch (error) {
+          if (isMissingContainerFile(error)) continue;
+          throw error;
+        }
+      }
+
+      if (!isCurrentProject() || useFileExplorer.getState().playgroundId !== id) return;
+      const latest = useFileExplorer.getState();
+      const latestTree =
+        latest.templateData && "items" in latest.templateData
+          ? latest.templateData
+          : tree;
+      const applied = applyExternalFileContents({
+        tree: latestTree,
+        openFiles: latest.openFiles,
+        files,
+      });
+      if (!applied.changed) return;
+      if (!isCurrentProject() || useFileExplorer.getState().playgroundId !== id) return;
+
+      const active = applied.openFiles.find((file) => file.id === latest.activeFileId);
+      useFileExplorer.setState({
+        templateData: applied.tree,
+        openFiles: applied.openFiles,
+        editorContent: active ? active.content : latest.editorContent,
+      });
+      await saveTemplateData(applied.tree, { notify: false });
+    });
+  }, [instance, id, isCurrentProject, saveTemplateData]);
 
   useEffect(() => {
     setPlaygroundId(id);
@@ -307,65 +377,66 @@ export default function PlaygroundPage() {
 
   const persistFiles = useCallback(
     async (fileIds: string[]) => {
-      const explorerTemplate = useFileExplorer.getState().templateData;
-      const latestTemplateData =
-        explorerTemplate &&
-        typeof explorerTemplate === "object" &&
-        "items" in explorerTemplate
-          ? explorerTemplate
-          : templateData;
-      const openFilesNow = useFileExplorer.getState().openFiles;
-      const filesToSave = openFilesNow.filter((file) =>
-        fileIds.includes(file.id),
-      );
+      return fileQueue.current(async () => {
+        const explorerTemplate = useFileExplorer.getState().templateData;
+        const latestTemplateData =
+          explorerTemplate &&
+          typeof explorerTemplate === "object" &&
+          "items" in explorerTemplate
+            ? explorerTemplate
+            : templateData;
+        const openFilesNow = useFileExplorer.getState().openFiles;
+        const filesToSave = openFilesNow.filter((file) =>
+          fileIds.includes(file.id),
+        );
 
-      if (filesToSave.length === 0) return;
-      if (!latestTemplateData || !("items" in latestTemplateData)) {
-        throw new Error("Template data is not loaded");
-      }
+        if (filesToSave.length === 0) return null;
+        if (!latestTemplateData || !("items" in latestTemplateData)) {
+          throw new Error("Template data is not loaded");
+        }
 
-      const result = await saveFilesToProject({
-        tree: latestTemplateData,
-        files: filesToSave,
-        saveTree: async (tree) => {
-          const outcome = await saveTemplateData(tree);
-          return outcome.persisted;
-        },
-        writeFile: writeFileSync,
-        stillCurrent: () =>
-          isCurrentProject() &&
-          useFileExplorer.getState().playgroundId === id,
+        const result = await saveFilesToProject({
+          tree: latestTemplateData,
+          files: filesToSave,
+          saveTree: async (tree) => {
+            const outcome = await saveTemplateData(tree);
+            return outcome.persisted;
+          },
+          writeFile: writeFileSync,
+          readFile: readContainerFile,
+          stillCurrent: () =>
+            isCurrentProject() &&
+            useFileExplorer.getState().playgroundId === id,
+        });
+        if (result.status !== "saved") return null;
+
+        for (const saved of result.files) {
+          if (saved.editorSaved && saved.id) {
+            lastSyncedContent.current.set(saved.id, saved.content);
+          }
+        }
+
+        const nextOpen = editorStateAfterSave(
+          useFileExplorer.getState().openFiles,
+          result.files,
+        );
+        const activeId = useFileExplorer.getState().activeFileId;
+        const active = nextOpen.find((file) => file.id === activeId);
+        useFileExplorer.setState({
+          templateData: result.tree,
+          openFiles: nextOpen,
+          editorContent: active
+            ? active.content
+            : useFileExplorer.getState().editorContent,
+        });
+        return result.files;
       });
-      if (result.status !== "saved") return;
-
-      for (const fileToSave of filesToSave) {
-        lastSyncedContent.current.set(fileToSave.id, fileToSave.content);
-      }
-
-      // Keep the folder object in the explorer store after a save for this project.
-      setTemplateData(result.tree);
-
-      const savedById = new Map(
-        filesToSave.map((file) => [file.id, file.content]),
-      );
-      setOpenFiles(
-        useFileExplorer.getState().openFiles.map((file) => {
-          const savedContent = savedById.get(file.id);
-          if (savedContent === undefined) return file;
-          return {
-            ...file,
-            originalContent: savedContent,
-            hasUnsavedChanges: file.content !== savedContent,
-          };
-        }),
-      );
     },
     [
       templateData,
       writeFileSync,
+      readContainerFile,
       saveTemplateData,
-      setTemplateData,
-      setOpenFiles,
       isCurrentProject,
       id,
     ],
@@ -383,9 +454,19 @@ export default function PlaygroundPage() {
 
       const label = `${fileToSave.filename}.${fileToSave.fileExtension}`;
       try {
-        await persistFiles([targetFileId]);
+        const saved = await persistFiles([targetFileId]);
         if (useFileExplorer.getState().playgroundId !== id) return;
-        if (notify) toast.success(`Saved ${label}`);
+        if (!notify || !saved) return;
+        const keptPreviewChange = saved.some(
+          (file) => file.id === targetFileId && !file.editorSaved,
+        );
+        if (keptPreviewChange) {
+          toast.message(
+            `${label} changed in the preview. Those changes were kept, and this edit is still unsaved.`,
+          );
+          return;
+        }
+        toast.success(`Saved ${label}`);
       } catch (error) {
         console.error("Error saving file:", error);
         if (notify) toast.error(saveFailureMessage(error, label));
@@ -424,6 +505,12 @@ export default function PlaygroundPage() {
         const savedName = savedFile
           ? `${savedFile.filename}.${savedFile.fileExtension}`
           : proposal.path;
+        if (savedFile?.hasUnsavedChanges) {
+          toast.message(
+            `${savedName} changed in the preview. Those changes were kept, and this edit is still unsaved.`,
+          );
+          return "save-failed" as const;
+        }
         toast.success(`Saved ${savedName}`);
         return "applied" as const;
       } catch {
@@ -472,8 +559,14 @@ export default function PlaygroundPage() {
     }
 
     try {
-      await persistFiles(unsavedFiles.map((file) => file.id));
+      const saved = await persistFiles(unsavedFiles.map((file) => file.id));
       if (useFileExplorer.getState().playgroundId !== id) return;
+      if (saved?.some((file) => !file.editorSaved)) {
+        toast.message(
+          "Some files changed in the preview. Those changes were kept, and the editor edits are still unsaved.",
+        );
+        return;
+      }
       toast.success(`Saved ${unsavedFiles.length} file(s)`);
     } catch (error) {
       console.error("Error saving files:", error);
@@ -745,6 +838,7 @@ export default function PlaygroundPage() {
                       error={containerError}
                       serverUrl={serverUrl!}
                       forceResetup={false}
+                      onPackageManagerFinished={syncPackageManagerFiles}
                     />
                   </ResizablePanel>
                 </ResizablePanelGroup>

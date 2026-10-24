@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type { TemplateFolder } from "../types";
 import {
   ProjectSaveError,
+  editorStateAfterSave,
   explorerSaveDecision,
   isPersistedSave,
   saveFailureMessage,
@@ -274,6 +275,237 @@ describe("saveFilesToProject", () => {
 
     assert.equal(container.get("pages/index.js"), "pages next");
     assert.equal(container.get("routes/index.js"), "routes saved");
+  });
+
+  it("keeps a dependency installed in the container when the editor saves a stale package.json", async () => {
+    const baseline = `{
+  "name": "react-starter",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
+`;
+    const installed = `{
+  "name": "react-starter",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.18.4"
+  }
+}
+`;
+    const editor = `{
+  "name": "react-starter",
+  "private": true,
+  "ctrlaltfixTest": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
+`;
+    const lockfile = `{"name":"react-starter","packages":{"react-router-dom":{"version":"7.18.4"}}}\n`;
+    const tree: TemplateFolder = {
+      folderName: "react",
+      items: [
+        { filename: "package", fileExtension: "json", content: baseline },
+        { filename: "package-lock", fileExtension: "json", content: "{}\n" },
+        { filename: "App", fileExtension: "tsx", content: "export const App = 1;\n" },
+      ],
+    };
+    const container = new Map<string, string>([
+      ["package.json", installed],
+      ["package-lock.json", lockfile],
+      ["App.tsx", "export const App = 1;\n"],
+    ]);
+    const reads: string[] = [];
+    let persisted: TemplateFolder | null = null;
+
+    const result = await saveFilesToProject({
+      tree,
+      files: [
+        {
+          id: "package.json",
+          filename: "package",
+          fileExtension: "json",
+          content: editor,
+          originalContent: baseline,
+        },
+      ],
+      saveTree: async (next) => {
+        persisted = next;
+        return true;
+      },
+      readFile: async (path) => {
+        reads.push(path);
+        return container.get(path) ?? null;
+      },
+      writeFile: async (path, content) => {
+        container.set(path, content);
+      },
+    });
+
+    assert.equal(result.status, "saved");
+    const savedPackage = container.get("package.json") ?? "";
+    const parsed = JSON.parse(savedPackage) as {
+      ctrlaltfixTest?: boolean;
+      dependencies?: Record<string, string>;
+    };
+    assert.equal(parsed.ctrlaltfixTest, true);
+    assert.equal(parsed.dependencies?.["react-router-dom"], "^7.18.4");
+    assert.equal(parsed.dependencies?.react, "^19.0.0");
+    assert.equal(parsed.dependencies?.["react-dom"], "^19.0.0");
+    assert.equal(container.get("package-lock.json"), lockfile);
+    assert.equal(reads.includes("package-lock.json"), false);
+    assert.match(JSON.stringify(persisted), /react-router-dom/);
+    assert.match(JSON.stringify(persisted), /ctrlaltfixTest/);
+    assert.match(JSON.stringify(persisted), /7\.18\.4/);
+    if (result.status === "saved") {
+      const saved = result.files.find((file) => file.path === "package.json");
+      assert.equal(saved?.editorSaved, true);
+      assert.match(saved?.content ?? "", /react-router-dom/);
+      const open = editorStateAfterSave(
+        [
+          {
+            id: "package.json",
+            content: editor,
+            originalContent: baseline,
+            hasUnsavedChanges: true,
+          },
+        ],
+        result.files,
+      );
+      assert.match(open[0]?.content ?? "", /react-router-dom/);
+      assert.match(open[0]?.content ?? "", /ctrlaltfixTest/);
+      assert.equal(open[0]?.hasUnsavedChanges, false);
+    }
+  });
+
+  it("does not overwrite a package.json the editor and the package manager both changed in the same lines", async () => {
+    const baseline = '{\n  "dependencies": {\n    "react": "^19.0.0"\n  }\n}\n';
+    const installed = '{\n  "dependencies": {\n    "react": "^19.0.0",\n    "react-router-dom": "^7.18.4"\n  }\n}\n';
+    const editor = '{\n  "dependencies": {\n    "react": "^18.0.0"\n  }\n}\n';
+    const container = new Map<string, string>([["package.json", installed]]);
+    let writes = 0;
+
+    const result = await saveFilesToProject({
+      tree: {
+        folderName: "react",
+        items: [{ filename: "package", fileExtension: "json", content: baseline }],
+      },
+      files: [
+        {
+          id: "package.json",
+          filename: "package",
+          fileExtension: "json",
+          content: editor,
+          originalContent: baseline,
+        },
+      ],
+      saveTree: async () => true,
+      readFile: async (path) => container.get(path) ?? null,
+      writeFile: async (path, content) => {
+        writes += 1;
+        container.set(path, content);
+      },
+    });
+
+    assert.equal(writes, 0);
+    assert.equal(container.get("package.json"), installed);
+    assert.equal(result.status, "saved");
+    if (result.status === "saved") {
+      assert.equal(result.files[0]?.editorSaved, false);
+      assert.match(JSON.stringify(result.tree), /react-router-dom/);
+      const open = editorStateAfterSave(
+        [
+          {
+            id: "package.json",
+            content: editor,
+            originalContent: baseline,
+            hasUnsavedChanges: true,
+          },
+        ],
+        result.files,
+      );
+      assert.equal(open[0]?.content, editor);
+      assert.equal(open[0]?.hasUnsavedChanges, true);
+    }
+  });
+
+  it("saves an editor-controlled file when the container still has the editor baseline", async () => {
+    const container = new Map<string, string>([
+      ["package.json", '{"dependencies":{"react":"1"}}\n'],
+      ["App.tsx", "export const App = 1;\n"],
+    ]);
+
+    const result = await saveFilesToProject({
+      tree: {
+        folderName: "react",
+        items: [
+          { filename: "package", fileExtension: "json", content: '{"dependencies":{"react":"1"}}\n' },
+          { filename: "App", fileExtension: "tsx", content: "export const App = 1;\n" },
+        ],
+      },
+      files: [
+        {
+          id: "App.tsx",
+          filename: "App",
+          fileExtension: "tsx",
+          content: "export const App = 2;\n",
+          originalContent: "export const App = 1;\n",
+        },
+      ],
+      saveTree: async () => true,
+      readFile: async (path) => container.get(path) ?? null,
+      writeFile: async (path, content) => {
+        container.set(path, content);
+      },
+    });
+
+    assert.equal(container.get("App.tsx"), "export const App = 2;\n");
+    assert.equal(container.get("package.json"), '{"dependencies":{"react":"1"}}\n');
+    assert.equal(result.status, "saved");
+  });
+
+  it("restores the installed manifest when the database rejects a merged save", async () => {
+    const baseline = '{\n  "name": "react-starter",\n  "dependencies": {\n    "react": "^19.0.0"\n  }\n}\n';
+    const installed = '{\n  "name": "react-starter",\n  "dependencies": {\n    "react": "^19.0.0",\n    "react-router-dom": "^7.18.4"\n  }\n}\n';
+    const editor = '{\n  "name": "react-starter",\n  "ctrlaltfixTest": true,\n  "dependencies": {\n    "react": "^19.0.0"\n  }\n}\n';
+    const container = new Map<string, string>([["package.json", installed]]);
+
+    await assert.rejects(
+      () =>
+        saveFilesToProject({
+          tree: {
+            folderName: "react",
+            items: [{ filename: "package", fileExtension: "json", content: baseline }],
+          },
+          files: [
+            {
+              id: "package.json",
+              filename: "package",
+              fileExtension: "json",
+              content: editor,
+              originalContent: baseline,
+            },
+          ],
+          saveTree: async () => false,
+          readFile: async (path) => container.get(path) ?? null,
+          writeFile: async (path, content) => {
+            container.set(path, content);
+          },
+        }),
+      /Failed to save template data/,
+    );
+
+    assert.match(container.get("package.json") ?? "", /react-router-dom/);
+    assert.equal(container.get("package.json")?.includes("ctrlaltfixTest"), false);
   });
 });
 

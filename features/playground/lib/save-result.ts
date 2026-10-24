@@ -1,4 +1,5 @@
 import type { TemplateFile, TemplateFolder } from "../types";
+import { resolveEditorWrite } from "./container-sync.ts";
 import { fileLabel, findFilePath, updateFileInTree } from "./index.ts";
 
 /** `saveUpdatedCode` returns the upserted row, or `null` when the write did not happen. */
@@ -52,7 +53,7 @@ export function saveFailureMessage(error: unknown, label: string): string {
   return `Failed to save ${label}`;
 }
 
-type SaveFile = TemplateFile & { id?: string };
+type SaveFile = TemplateFile & { id?: string; originalContent?: string };
 
 interface PlannedWrite {
   path: string;
@@ -60,53 +61,125 @@ interface PlannedWrite {
   previousContent: string;
 }
 
+export interface SavedProjectFile {
+  id?: string;
+  path: string;
+  content: string;
+  /** False when the editor still holds an edit that was not written. */
+  editorSaved: boolean;
+  editorAtSave: string;
+}
+
 export type ProjectSaveResult =
-  | { status: "saved"; tree: TemplateFolder }
+  | { status: "saved"; tree: TemplateFolder; files: SavedProjectFile[] }
   | { status: "switched"; persisted: boolean };
+
+interface OpenSavedFile {
+  id: string;
+  content: string;
+  originalContent: string;
+  hasUnsavedChanges: boolean;
+}
+
+/** Applies a finished save to open tabs without dropping keystrokes made while it ran. */
+export function editorStateAfterSave<T extends OpenSavedFile>(
+  openFiles: readonly T[],
+  saved: readonly SavedProjectFile[],
+): T[] {
+  const byId = new Map(
+    saved.flatMap((file) => (file.id ? [[file.id, file] as const] : [])),
+  );
+  return openFiles.map((file) => {
+    const result = byId.get(file.id);
+    if (!result?.editorSaved) return file;
+    const typedDuringSave = file.content !== result.editorAtSave;
+    const content = typedDuringSave ? file.content : result.content;
+    return {
+      ...file,
+      content,
+      originalContent: result.content,
+      hasUnsavedChanges: content !== result.content,
+    };
+  });
+}
 
 interface RestoreResult {
   previewRestored: boolean;
   restoreError: unknown;
 }
 
+interface PlannedSave {
+  file: SaveFile;
+  path: string;
+  editor: string;
+  baseline: string;
+  previousContent: string;
+}
+
 /**
  * Saves the edited files into the project tree, then the database.
  * Preview files are written first so a rejected database save can put the previous
  * text back. Writes stop once the open project is no longer this save's project.
+ * When `readFile` is set, a container file that changed after the editor loaded
+ * it is not replaced by that stale buffer.
  */
 export async function saveFilesToProject(input: {
   tree: TemplateFolder;
   files: SaveFile[];
   saveTree: (tree: TemplateFolder) => Promise<boolean>;
   writeFile?: (path: string, content: string) => Promise<void>;
+  readFile?: (path: string) => Promise<string | null>;
   stillCurrent?: () => boolean;
 }): Promise<ProjectSaveResult> {
   let nextTree = JSON.parse(JSON.stringify(input.tree)) as TemplateFolder;
-  const planned: PlannedWrite[] = [];
+  const planned: PlannedSave[] = [];
 
   for (const file of input.files) {
     const filePath = findFilePath(file, nextTree);
     if (!filePath) {
       throw new Error(`Could not find file path for ${file.filename}.${file.fileExtension}`);
     }
+    const previousContent = contentAt(input.tree, filePath);
     planned.push({
+      file,
       path: filePath,
-      nextContent: file.content,
-      previousContent: contentAt(input.tree, filePath),
+      editor: file.content,
+      baseline: typeof file.originalContent === "string" ? file.originalContent : previousContent,
+      previousContent,
     });
     nextTree = updateFileInTree(nextTree, file, file.content);
   }
 
   const projectChanged = () => input.stillCurrent !== undefined && !input.stillCurrent();
   const written: PlannedWrite[] = [];
+  const outcomes = new Map<string, { content: string; editorSaved: boolean }>();
 
   if (input.writeFile && !projectChanged()) {
     const writeFile = input.writeFile;
     try {
       for (const file of planned) {
         if (projectChanged()) break;
-        await writeFile(file.path, file.nextContent);
-        written.push(file);
+        const disk = input.readFile ? await input.readFile(file.path) : file.baseline;
+        if (projectChanged()) break;
+        const decision = resolveEditorWrite({
+          path: file.path,
+          baseline: file.baseline,
+          editor: file.editor,
+          disk,
+        });
+        if (decision.write) {
+          await writeFile(file.path, decision.content);
+          written.push({
+            path: file.path,
+            nextContent: decision.content,
+            previousContent: disk ?? file.previousContent,
+          });
+        }
+        outcomes.set(file.path, {
+          content: decision.content,
+          editorSaved: decision.editorSaved,
+        });
+        nextTree = updateFileInTree(nextTree, file.file, decision.content);
       }
     } catch (error) {
       if (projectChanged()) {
@@ -144,7 +217,20 @@ export async function saveFilesToProject(input: {
     );
   }
 
-  return { status: "saved", tree: nextTree };
+  return {
+    status: "saved",
+    tree: nextTree,
+    files: planned.map((file) => {
+      const outcome = outcomes.get(file.path);
+      return {
+        id: file.file.id,
+        path: file.path,
+        content: outcome?.content ?? file.editor,
+        editorSaved: outcome?.editorSaved ?? true,
+        editorAtSave: file.editor,
+      };
+    }),
+  };
 }
 
 function contentAt(tree: TemplateFolder, filePath: string): string {

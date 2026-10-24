@@ -12,6 +12,8 @@ interface TerminalProps {
   className?: string;
   theme?: "dark" | "light";
   webContainerInstance?: any;
+  /** Called after a command process exits, including when it is interrupted. */
+  onCommandFinished?: (command: string) => void | Promise<void>;
 }
 
 // Define the methods that will be exposed through the ref
@@ -25,7 +27,8 @@ const TerminalComponent = forwardRef<TerminalRef, TerminalProps>(({
   webcontainerUrl, 
   className,
   theme = "dark",
-  webContainerInstance
+  webContainerInstance,
+  onCommandFinished,
 }, ref) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const term = useRef<import("xterm").Terminal | null>(null);
@@ -43,6 +46,8 @@ const TerminalComponent = forwardRef<TerminalRef, TerminalProps>(({
   const historyIndex = useRef<number>(-1);
   const currentProcess = useRef<any>(null);
   const initId = useRef(0);
+  const onCommandFinishedRef = useRef(onCommandFinished);
+  onCommandFinishedRef.current = onCommandFinished;
 
   const terminalThemes = {
     dark: {
@@ -177,6 +182,11 @@ const TerminalComponent = forwardRef<TerminalRef, TerminalProps>(({
       // Wait for process to complete. Ctrl+C and a newer command replace
       // currentProcess first, so this exit must not clear that newer process.
       await process.exit;
+      try {
+        await onCommandFinishedRef.current?.(command);
+      } catch (syncError) {
+        console.error("Failed to record files changed by the command:", syncError);
+      }
       if (currentProcess.current !== process) return;
 
       currentProcess.current = null;

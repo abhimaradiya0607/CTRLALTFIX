@@ -18,7 +18,7 @@ interface UsePlaygroundReturn{
     isLoading:boolean;
     error:string | null;
     loadPlayground:()=>Promise<void>;
-    saveTemplateData:(data:TemplateFolder)=>Promise<TemplateSaveOutcome>;
+    saveTemplateData:(data:TemplateFolder, options?: { notify?: boolean })=>Promise<TemplateSaveOutcome>;
     isCurrentProject:()=>boolean;
 }
 
@@ -132,8 +132,12 @@ export const usePlayground=(id:string):UsePlaygroundReturn=>{
         }
     }, [id, requestGeneration]);
 
-    const saveTemplateData=useCallback(async(data:TemplateFolder): Promise<TemplateSaveOutcome>=>{
+    const saveTemplateData=useCallback(async(
+        data:TemplateFolder,
+        options?: { notify?: boolean },
+    ): Promise<TemplateSaveOutcome>=>{
         const saveForId = id;
+        const notify = options?.notify !== false;
         const isCurrent = () => projectIdRef.current === saveForId;
         try {
             const saved = await saveUpdatedCode(saveForId, data);
@@ -146,7 +150,7 @@ export const usePlayground=(id:string):UsePlaygroundReturn=>{
                 return outcome;
             }
             setTemplateData(data);
-            toast.success("Template data saved successfully");
+            if (notify) toast.success("Template data saved successfully");
             return outcome;
         } catch (error) {
             if (!isCurrent()) {

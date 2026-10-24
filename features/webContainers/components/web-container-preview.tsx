@@ -10,6 +10,11 @@ import TerminalComponent, { type TerminalRef } from "./terminal";
 import type { WebContainer, WebContainerProcess } from "@webcontainer/api";
 import { reloadPreview } from "@webcontainer/api/utils";
 import {
+  commandMayChangeManifests,
+  isMissingContainerFile,
+  shouldWriteContainerFile,
+} from "@/features/playground/lib/container-sync";
+import {
   changedContainerFiles,
   listContainerFiles,
   staleContainerPaths,
@@ -23,6 +28,8 @@ interface WebContainerPreviewProps {
   instance: WebContainer | null;
   writeFileSync: (path: string, content: string) => Promise<void>;
   forceResetup?: boolean;
+  /** Reads package manifests back after npm, yarn, pnpm, or bun changes them. */
+  onPackageManagerFinished?: () => void | Promise<void>;
 }
 
 type LoadingState = {
@@ -53,6 +60,7 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
   isLoading,
   serverUrl,
   forceResetup = false,
+  onPackageManagerFinished,
 }) => {
   const [previewUrl, setPreviewUrl] = useState("");
   const [loadingState, setLoadingState] =
@@ -73,6 +81,13 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
   const setupTaskRef = useRef<Promise<void>>(Promise.resolve());
   const previewAliveRef = useRef(true);
   const stopOwnedProcessRef = useRef<() => void>(() => {});
+  const onPackageManagerFinishedRef = useRef(onPackageManagerFinished);
+  onPackageManagerFinishedRef.current = onPackageManagerFinished;
+
+  const handleCommandFinished = (command: string) => {
+    if (!commandMayChangeManifests(command)) return;
+    return onPackageManagerFinishedRef.current?.();
+  };
 
   const totalSteps = 4;
 
@@ -275,17 +290,38 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
       let disposed = false;
       void (async () => {
         try {
+          const applied = new Map(nextFiles);
+          let wrote = false;
           for (const file of updates) {
             if (disposed) return;
+            let disk: string | null = null;
+            try {
+              disk = await instance.fs.readFile(file.path, "utf-8");
+            } catch (readError) {
+              if (!isMissingContainerFile(readError)) throw readError;
+            }
+            if (
+              !shouldWriteContainerFile({
+                previous: lastContainerFilesRef.current.get(file.path),
+                next: file.content,
+                disk,
+              })
+            ) {
+              if (disk !== null) applied.set(file.path, disk);
+              continue;
+            }
             await instance.fs.writeFile(file.path, file.content);
+            wrote = true;
           }
           if (disposed) return;
-          const frame = previewFrameRef.current;
-          if (frame) {
-            await reloadPreview(frame);
+          if (wrote) {
+            const frame = previewFrameRef.current;
+            if (frame) {
+              await reloadPreview(frame);
+            }
           }
           if (disposed) return;
-          lastContainerFilesRef.current = nextFiles;
+          lastContainerFilesRef.current = applied;
           setSetupError(null);
         } catch (writeError) {
           if (disposed) return;
@@ -502,6 +538,15 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
 
         writeTerminal(`\r\nPreview ready: ${startupResult.url}\r\n`);
 
+        // The install above can rewrite package.json and create a lockfile.
+        // Start the import without awaiting it so this run can finish before the
+        // saved tree updates and this effect runs again.
+        if (isCurrentRun()) {
+          void Promise.resolve(onPackageManagerFinishedRef.current?.()).catch((syncError) => {
+            console.error("Failed to record installed package manifests:", syncError);
+          });
+        }
+
         void serverOutput;
 
         void startProcess.exit.then((exitCode) => {
@@ -627,6 +672,7 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
             webcontainerUrl={previewUrl}
             theme="dark"
             className="h-full"
+            onCommandFinished={handleCommandFinished}
           />
         </div>
       </div>
@@ -673,6 +719,7 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
               webcontainerUrl={previewUrl}
               theme="dark"
               className="h-full"
+              onCommandFinished={handleCommandFinished}
             />
           </div>
         </div>
@@ -694,6 +741,7 @@ const WebContainerPreview: React.FC<WebContainerPreviewProps> = ({
               webcontainerUrl={previewUrl}
               theme="dark"
               className="h-full"
+              onCommandFinished={handleCommandFinished}
             />
           </div>
         </div>

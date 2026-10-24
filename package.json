@@ -16,6 +16,7 @@
     "@prisma/client": "^6.19.3",
     "@shadcn/react": "^0.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@vercel/analytics": "^2.0.1",
     "@webcontainer/api": "^1.6.4",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",

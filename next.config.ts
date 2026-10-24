@@ -8,9 +8,12 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@prisma/client", "prisma"],
 
   outputFileTracingIncludes: {
+    "/api/template/[id]": ["./starters/**/*"],
+    "/api/*": ["./starters/**/*"],
     "/*": [
       "./node_modules/.prisma/client/**/*",
       "./node_modules/@prisma/client/**/*",
+      "./starters/**/*",
     ],
   },
 

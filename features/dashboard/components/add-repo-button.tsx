@@ -1,11 +1,8 @@
 'use client'
 
-import React from 'react'
 import { Button } from '@/components/ui/button'
-import { ArrowDown, GitBranch } from 'lucide-react'
+import { ArrowDown } from 'lucide-react'
 import Image from 'next/image'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
 
 const AddNewRepoButton = () => {
   return (
